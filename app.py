@@ -215,7 +215,6 @@ def fetch_odds_from_api(api_key, league_cn):
         commence = game.get("commence_time")
         if not home or not away: continue
 
-        # 北京时间日期
         match_date = ""
         if commence:
             try:
@@ -225,7 +224,6 @@ def fetch_odds_from_api(api_key, league_cn):
             except:
                 pass
 
-        # 获取让球和大小球
         spreads = totals = None
         for book in game.get("bookmakers", []):
             for market in book.get("markets", []):
@@ -258,7 +256,7 @@ def fetch_odds_from_api(api_key, league_cn):
 def find_best_parlay(all_matches: List[Match], top_n=4):
     scored = [(m, score_match(m)) for m in all_matches]
     scored.sort(key=lambda x: x[1], reverse=True)
-    filtered = [(m, s) for m, s in scored if s >= 3]  # 排除 D 类
+    filtered = [(m, s) for m, s in scored if s >= 3]
     best = filtered[:top_n]
     return [m for m, _ in best]
 
@@ -282,7 +280,7 @@ def find_all_valid_parlays(all_matches: List[Match], parlay_size=4):
 
 st.set_page_config(page_title="多场一体检器 Pro", page_icon="⚽", layout="wide")
 st.title("⚽ 多场一体检器 Pro")
-st.caption("支持任意场次 | 自动评分排序 | 智能推荐最佳串关")
+st.caption("支持任意场次（最多10场） | 自动评分排序 | 智能推荐最佳串关")
 
 mode = st.radio("选择模式", ["📝 赛前体检模式", "📊 赛后复盘模式"], horizontal=True)
 
@@ -298,25 +296,38 @@ with st.expander("📡 一键导入比赛盘口（免费 API）", expanded=False
             with st.spinner("拉取中..."):
                 raw = fetch_odds_from_api(api_key, league_cn)
                 if raw:
-                    st.session_state["api_matches"] = raw
-                    # 限制最多显示 20 场，防止界面过长
-                    st.session_state["match_count"] = min(len(raw), 20)
-                    st.success(f"已加载 {len(raw)} 场比赛（已翻译中文队名），显示前 {min(len(raw), 20)} 场")
+                    # 最多只保留前10场
+                    limited = raw[:10]
+                    st.session_state["api_matches"] = limited
+                    st.session_state["match_count"] = min(len(limited), 10)
+
+                    # 强制覆盖所有输入字段，避免残留旧数据
+                    for i, m in enumerate(limited):
+                        st.session_state[f"name{i}"] = m["name"]
+                        st.session_state[f"date{i}"] = m["date"]
+                        st.session_state[f"ho{i}"] = m["handicap_open"]
+                        st.session_state[f"hl{i}"] = m["handicap_live"]
+                        st.session_state[f"to{i}"] = m["total_open"]
+                        st.session_state[f"tl{i}"] = m["total_live"]
+                        st.session_state[f"co{i}"] = 9.0
+                        st.session_state[f"cl{i}"] = 9.0
+                        st.session_state[f"ch{i}"] = 4.0
+                    st.success(f"已加载 {len(limited)} 场比赛（已翻译中文队名）")
                     st.rerun()
 
 st.divider()
 
-# ---------- 场次数量选择（修复 value 越界 bug） ----------
+# ---------- 场次数量选择（最大10场） ----------
 if "match_count" not in st.session_state:
-    st.session_state["match_count"] = 8
+    st.session_state["match_count"] = 4   # 默认4场更合理
 
-# 确保 session_state 中的值不超过 max_value
-safe_count = min(st.session_state.get("match_count", 8), 20)
+# 确保不超上限
+safe_count = min(st.session_state.get("match_count", 4), 10)
 
 match_count = st.number_input(
     "今天有几场比赛？",
     min_value=2,
-    max_value=20,
+    max_value=10,               # ← 改为10
     value=safe_count,
     step=1
 )
@@ -328,18 +339,19 @@ use_corner = st.checkbox("📐 启用角球分析", value=True)
 # ---------- 读取 API 导入的数据 ----------
 api_data = st.session_state.get("api_matches", [])
 
-# ---------- 比赛数据输入（动态行数） ----------
+# ---------- 比赛数据输入 ----------
 st.subheader("📝 比赛数据输入")
 matches = []
 
 for i in range(match_count):
     with st.expander(f"比赛 {i+1}", expanded=(i < 4)):
-        # 默认值（优先使用 API 数据）
+        # 默认值准备
         def_name = f"比赛{i+1}"
         def_date = ""
         def_ho, def_hl, def_to, def_tl = 0.0, 0.0, 2.5, 2.5
         def_co, def_cl, def_ch = 9.0, 9.0, 4.0
 
+        # 如果 API 数据存在，用 API 数据覆盖
         if i < len(api_data):
             m = api_data[i]
             def_name = m["name"]
@@ -349,21 +361,42 @@ for i in range(match_count):
             def_to = m["total_open"]
             def_tl = m["total_live"]
 
+        # 关键修复：如果 session_state 中没有该字段或为空，则用默认值初始化
+        if f"name{i}" not in st.session_state or not st.session_state[f"name{i}"]:
+            st.session_state[f"name{i}"] = def_name
+        if f"date{i}" not in st.session_state:
+            st.session_state[f"date{i}"] = def_date
+        if f"ho{i}" not in st.session_state:
+            st.session_state[f"ho{i}"] = def_ho
+        if f"hl{i}" not in st.session_state:
+            st.session_state[f"hl{i}"] = def_hl
+        if f"to{i}" not in st.session_state:
+            st.session_state[f"to{i}"] = def_to
+        if f"tl{i}" not in st.session_state:
+            st.session_state[f"tl{i}"] = def_tl
+        if use_corner:
+            if f"co{i}" not in st.session_state:
+                st.session_state[f"co{i}"] = def_co
+            if f"cl{i}" not in st.session_state:
+                st.session_state[f"cl{i}"] = def_cl
+            if f"ch{i}" not in st.session_state:
+                st.session_state[f"ch{i}"] = def_ch
+
         col1, col2, col3, col4, col5 = st.columns(5)
-        name = col1.text_input("比赛名称", def_name, key=f"name{i}")
-        match_date = col2.text_input("日期", def_date, key=f"date{i}", placeholder="YYYY-MM-DD")
-        h_open = col3.number_input("初盘让球", value=def_ho, step=0.25, key=f"ho{i}")
-        h_live = col4.number_input("即时让球", value=def_hl, step=0.25, key=f"hl{i}")
-        t_open = col5.number_input("大小球初盘", value=def_to, step=0.25, key=f"to{i}")
+        name = col1.text_input("比赛名称", key=f"name{i}")
+        match_date = col2.text_input("日期", key=f"date{i}", placeholder="YYYY-MM-DD")
+        h_open = col3.number_input("初盘让球", step=0.25, key=f"ho{i}")
+        h_live = col4.number_input("即时让球", step=0.25, key=f"hl{i}")
+        t_open = col5.number_input("大小球初盘", step=0.25, key=f"to{i}")
 
         col6, col7 = st.columns(2)
-        t_live = col6.number_input("大小球即时盘", value=def_tl, step=0.25, key=f"tl{i}")
+        t_live = col6.number_input("大小球即时盘", step=0.25, key=f"tl{i}")
 
         if use_corner:
             colc1, colc2, colc3 = st.columns(3)
-            c_open = colc1.number_input("角球初盘", value=def_co, step=0.5, key=f"co{i}")
-            c_live = colc2.number_input("角球即时盘", value=def_cl, step=0.5, key=f"cl{i}")
-            c_half = colc3.number_input("上半场角球", value=def_ch, step=0.5, key=f"ch{i}")
+            c_open = colc1.number_input("角球初盘", step=0.5, key=f"co{i}")
+            c_live = colc2.number_input("角球即时盘", step=0.5, key=f"cl{i}")
+            c_half = colc3.number_input("上半场角球", step=0.5, key=f"ch{i}")
         else:
             c_open = c_live = c_half = None
 
@@ -394,7 +427,6 @@ st.divider()
 # ==================================================
 
 if st.button("🔍 开始分析全部比赛"):
-    # 所有比赛评分排序
     scored_list = [(m, score_match(m), score_to_level(score_match(m))) for m in matches]
     scored_list.sort(key=lambda x: x[1], reverse=True)
 
@@ -405,7 +437,6 @@ if st.button("🔍 开始分析全部比赛"):
 
     st.divider()
 
-    # 系统推荐最优四串一
     best_four = find_best_parlay(matches)
     st.header("🏆 系统推荐最优四串一")
     if len(best_four) < 4:
@@ -414,11 +445,8 @@ if st.button("🔍 开始分析全部比赛"):
         total_parlay_score = sum(score_match(m) for m in best_four)
         avg_parlay_score = total_parlay_score / 4
         st.success(f"推荐 {len(best_four)} 场比赛，平均评分：{avg_parlay_score:.1f}")
-
         for m in best_four:
             st.write(f"✅ **{m.name}** | 评分：{score_match(m)} | {auto_fix(m)}")
-
-        # 共振检测
         warnings = detect_resonance(best_four)
         if warnings:
             for w in warnings:
@@ -427,7 +455,6 @@ if st.button("🔍 开始分析全部比赛"):
 
     st.divider()
 
-    # 所有有效四串一排名（前 5）
     all_combos = find_all_valid_parlays(matches)
     if all_combos:
         st.header("📋 所有有效四串一排名（前 5）")
@@ -438,13 +465,11 @@ if st.button("🔍 开始分析全部比赛"):
 
     st.divider()
 
-    # 角球风格一览
     if use_corner:
         st.header("📐 角球风格一览")
         for m in matches:
             st.write(f"**{m.name}** ：{corner_style(m)}")
 
-    # 复盘模式：显示赛果 + 保存 JSON
     if mode == "📊 赛后复盘模式":
         st.divider()
         st.header("📋 实际赛果记录")
@@ -466,4 +491,4 @@ if st.button("🔍 开始分析全部比赛"):
             )
 
 else:
-    st.info("👆 设定比赛场次，填好数据后点击按钮生成报告。")
+    st.info("👆 设定比赛场次（2~10场），填好数据后点击按钮生成报告。")
