@@ -68,7 +68,7 @@ LEAGUE_MAP = {
 }
 
 # ==================================================
-# 球队翻译
+# 球队英文名 → 中文名翻译表
 # ==================================================
 
 TEAM_TRANSLATION = {
@@ -163,7 +163,32 @@ def bankroll_advice(avg_score):
 
 
 # ==================================================
-# API 拉取
+# 复盘数据保存
+# ==================================================
+
+def save_replay_data(matches):
+    replay = []
+    for m in matches:
+        replay.append({
+            "name": m.name,
+            "date": m.match_date,
+            "handicap_open": m.handicap_open,
+            "handicap_live": m.handicap_live,
+            "total_open": m.total_open,
+            "total_live": m.total_live,
+            "corner_open": m.corner_open,
+            "corner_live": m.corner_live,
+            "corner_half": m.corner_half,
+            "actual_result": m.actual_result,
+            "actual_goals": m.actual_goals,
+            "actual_corners": m.actual_corners,
+            "saved_at": datetime.now().strftime("%Y-%m-%d %H:%M")
+        })
+    return replay
+
+
+# ==================================================
+# The Odds API 拉取（自动翻译中文队名）
 # ==================================================
 
 def fetch_odds_from_api(api_key, league_cn):
@@ -181,6 +206,7 @@ def fetch_odds_from_api(api_key, league_cn):
     except Exception as e:
         st.error(f"网络异常：{e}")
         return []
+
     data = resp.json()
     matches = []
     for game in data:
@@ -188,13 +214,18 @@ def fetch_odds_from_api(api_key, league_cn):
         away = game.get("away_team")
         commence = game.get("commence_time")
         if not home or not away: continue
+
+        # 北京时间日期
         match_date = ""
         if commence:
             try:
                 utc_time = datetime.fromisoformat(commence.replace("Z", "+00:00"))
                 beijing_time = utc_time.astimezone(timezone(timedelta(hours=8)))
                 match_date = beijing_time.strftime("%Y-%m-%d")
-            except: pass
+            except:
+                pass
+
+        # 获取让球和大小球
         spreads = totals = None
         for book in game.get("bookmakers", []):
             for market in book.get("markets", []):
@@ -202,6 +233,7 @@ def fetch_odds_from_api(api_key, league_cn):
                     spreads = market["outcomes"]
                 elif market["key"] == "totals" and market.get("outcomes"):
                     totals = market["outcomes"]
+
         if spreads and totals:
             handicap = spreads[0].get("point", 0)
             total_line = totals[0].get("point", 2.5)
@@ -220,23 +252,18 @@ def fetch_odds_from_api(api_key, league_cn):
 
 
 # ==================================================
-# 智能推荐最优四串一
+# 智能组串逻辑
 # ==================================================
 
 def find_best_parlay(all_matches: List[Match], top_n=4):
-    """从所有比赛中选 top_n 个评分最高的比赛组合，返回最佳四串一列表"""
     scored = [(m, score_match(m)) for m in all_matches]
-    scored.sort(key=lambda x: x[1], reverse=True)  # 高分在前
-    # 排除 D 类
-    filtered = [(m, s) for m, s in scored if s >= 3]
+    scored.sort(key=lambda x: x[1], reverse=True)
+    filtered = [(m, s) for m, s in scored if s >= 3]  # 排除 D 类
     best = filtered[:top_n]
     return [m for m, _ in best]
 
-
 def find_all_valid_parlays(all_matches: List[Match], parlay_size=4):
-    """返回所有不含 D 类的四串一组合，按总分降序排列"""
     scored = [(m, score_match(m)) for m in all_matches]
-    # 排除 D 类
     valid = [(m, s) for m, s in scored if s >= 3]
     if len(valid) < parlay_size:
         return []
@@ -272,17 +299,28 @@ with st.expander("📡 一键导入比赛盘口（免费 API）", expanded=False
                 raw = fetch_odds_from_api(api_key, league_cn)
                 if raw:
                     st.session_state["api_matches"] = raw
-                    st.session_state["match_count"] = len(raw)
-                    st.success(f"已加载 {len(raw)} 场比赛（已翻译中文队名）")
+                    # 限制最多显示 20 场，防止界面过长
+                    st.session_state["match_count"] = min(len(raw), 20)
+                    st.success(f"已加载 {len(raw)} 场比赛（已翻译中文队名），显示前 {min(len(raw), 20)} 场")
                     st.rerun()
 
 st.divider()
 
-# ---------- 场次数量选择 ----------
+# ---------- 场次数量选择（修复 value 越界 bug） ----------
 if "match_count" not in st.session_state:
-    st.session_state["match_count"] = 8  # 默认 8 场
+    st.session_state["match_count"] = 8
 
-match_count = st.number_input("今天有几场比赛？", min_value=2, max_value=20, value=st.session_state["match_count"], step=1)
+# 确保 session_state 中的值不超过 max_value
+safe_count = min(st.session_state.get("match_count", 8), 20)
+
+match_count = st.number_input(
+    "今天有几场比赛？",
+    min_value=2,
+    max_value=20,
+    value=safe_count,
+    step=1
+)
+st.session_state["match_count"] = match_count
 
 # ---------- 角球开关 ----------
 use_corner = st.checkbox("📐 启用角球分析", value=True)
@@ -290,12 +328,13 @@ use_corner = st.checkbox("📐 启用角球分析", value=True)
 # ---------- 读取 API 导入的数据 ----------
 api_data = st.session_state.get("api_matches", [])
 
+# ---------- 比赛数据输入（动态行数） ----------
 st.subheader("📝 比赛数据输入")
-
 matches = []
-for i in range(int(match_count)):
+
+for i in range(match_count):
     with st.expander(f"比赛 {i+1}", expanded=(i < 4)):
-        # 从 API 数据读取默认值
+        # 默认值（优先使用 API 数据）
         def_name = f"比赛{i+1}"
         def_date = ""
         def_ho, def_hl, def_to, def_tl = 0.0, 0.0, 2.5, 2.5
@@ -328,6 +367,7 @@ for i in range(int(match_count)):
         else:
             c_open = c_live = c_half = None
 
+        # 复盘模式额外输入
         actual_result = None
         actual_goals = None
         actual_corners = None
@@ -350,11 +390,11 @@ for i in range(int(match_count)):
 st.divider()
 
 # ==================================================
-# 分析按钮
+# 开始分析
 # ==================================================
 
 if st.button("🔍 开始分析全部比赛"):
-    # 评分排序
+    # 所有比赛评分排序
     scored_list = [(m, score_match(m), score_to_level(score_match(m))) for m in matches]
     scored_list.sort(key=lambda x: x[1], reverse=True)
 
@@ -365,7 +405,7 @@ if st.button("🔍 开始分析全部比赛"):
 
     st.divider()
 
-    # 自动推荐最佳四串一
+    # 系统推荐最优四串一
     best_four = find_best_parlay(matches)
     st.header("🏆 系统推荐最优四串一")
     if len(best_four) < 4:
@@ -378,14 +418,16 @@ if st.button("🔍 开始分析全部比赛"):
         for m in best_four:
             st.write(f"✅ **{m.name}** | 评分：{score_match(m)} | {auto_fix(m)}")
 
+        # 共振检测
         warnings = detect_resonance(best_four)
         if warnings:
-            for w in warnings: st.warning(w)
+            for w in warnings:
+                st.warning(w)
         st.info(bankroll_advice(avg_parlay_score))
 
     st.divider()
 
-    # 所有有效串关排名
+    # 所有有效四串一排名（前 5）
     all_combos = find_all_valid_parlays(matches)
     if all_combos:
         st.header("📋 所有有效四串一排名（前 5）")
@@ -396,15 +438,15 @@ if st.button("🔍 开始分析全部比赛"):
 
     st.divider()
 
-    # 角球风格
+    # 角球风格一览
     if use_corner:
         st.header("📐 角球风格一览")
         for m in matches:
             st.write(f"**{m.name}** ：{corner_style(m)}")
-        st.divider()
 
-    # 复盘
+    # 复盘模式：显示赛果 + 保存 JSON
     if mode == "📊 赛后复盘模式":
+        st.divider()
         st.header("📋 实际赛果记录")
         for m in matches:
             date_str = f"({m.match_date})" if m.match_date else ""
@@ -413,6 +455,15 @@ if st.button("🔍 开始分析全部比赛"):
             goals = m.actual_goals if m.actual_goals is not None else "-"
             corners = m.actual_corners if m.actual_corners is not None else "-"
             st.write(f"**{m.name}** {date_str}：{actual}，进球 {goals}，角球 {corners}")
+
+        if st.button("💾 保存复盘数据为 JSON"):
+            replay_json = json.dumps(save_replay_data(matches), ensure_ascii=False, indent=2)
+            st.download_button(
+                label="下载复盘记录",
+                data=replay_json,
+                file_name=f"replay_{datetime.now().strftime('%Y%m%d_%H%M')}.json",
+                mime="application/json"
+            )
 
 else:
     st.info("👆 设定比赛场次，填好数据后点击按钮生成报告。")
